@@ -9,9 +9,13 @@ import png
 class ArgumentException(Exception):
     pass
 
+
+
 class Pixel:
     GRAYSCALE = "grayscale"
     COLOR = "color"
+
+    _cache = {}
 
     def __init__(self, kind, value, alpha):
         self._kind = kind
@@ -20,11 +24,25 @@ class Pixel:
 
     @classmethod
     def grayscale(cls, v, a=255):
-        return cls(cls.GRAYSCALE, v, a)
+        params = (cls.GRAYSCALE, v, a)
+        pixel = cls._cache.get(params)
+
+        if pixel is None:
+            pixel = cls(cls.GRAYSCALE, v, a)
+            cls._cache[params] = pixel
+
+        return pixel
 
     @classmethod
     def color(cls, r, g, b, a=255):
-        return cls(cls.COLOR, (r, g, b), a)
+        params = (cls.COLOR, r, g, b, a)
+        pixel = cls._cache.get(params)
+
+        if pixel is None:
+            pixel = cls(cls.COLOR, (r, g, b), a)
+            cls._cache[params] = pixel
+
+        return pixel
 
     def as_grayscale(self, alpha=False):
         if self._kind == self.GRAYSCALE:
@@ -50,6 +68,8 @@ class Pixel:
 
 Pixel.EMPTY = Pixel.grayscale(0, a=0)
 Pixel.EMPTY_GREEN = Pixel.color(0, 255, 0)
+
+
 
 def parse_widthes(widthstr):
     widthes = []
@@ -77,46 +97,50 @@ def optimal_width(total):
 
     return width
 
+
+
+def load_pixels(bytestr):
+    for byte in bytestr:
+        yield Pixel.grayscale(byte)
+
 def arrange_by_widthes(pixels, widthes):
-    rows = []
-
+    index = 0
+    pixel_amount = len(pixels)
     for width in widthes:
-        if pixels:
-            print(f"{len(pixels): 8} pixels left")
-            rows.append(pixels[:width])
-            pixels = pixels[width:]
-
+        if index < pixel_amount:
+            #print(f"At pixel {index: 8}")
+            yield pixels[index:index+width]
+            index += width
 
     last_width = widthes[-1]
-    while pixels:
-        print(f"{len(pixels): 8} pixels left")
-        rows.append(pixels[:last_width])
-        pixels = pixels[last_width:]
+    while index < pixel_amount:
+        #print(f"At pixel {index: 8}")
+        yield pixels[index:index+last_width]
+        index += last_width
 
-    return rows
-
-def max_row_width(rows):
-    return max(map(len, rows))
-
-def pad_rows_to_width(rows, width, pad_with=Pixel.EMPTY): # modifies in-place
+def pad_rows_to_width(rows, width, pad_with=Pixel.EMPTY):
     for row in rows:
         if len(row) < width:
             delta = width - len(row)
-            row.extend(delta * [pad_with])
+            yield row + delta * [pad_with]
+        else:
+            yield row
 
 def rows_as_grayscale(rows, alpha=True):
-    new_rows = []
     for row in rows:
-        values = (pixel.as_grayscale(alpha=alpha) for pixel in row)
-        new_rows.append(sum(values, []))
-    return new_rows
+        combined = []
+        for pixel in row:
+            combined.extend(pixel.as_grayscale(alpha=alpha))
+        yield combined
 
 def rows_as_rgb(rows, alpha=True):
-    new_rows = []
     for row in rows:
-        values = (pixel.as_rgb(alpha=alpha) for pixel in row)
-        new_rows.append(sum(values, []))
-    return new_rows
+        combined = []
+        for pixel in row:
+            combined.extend(pixel.as_rgb(alpha=alpha))
+        yield combined
+
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -131,44 +155,59 @@ def main():
     # but it works for now and this is just an experimental script, so... I'll
     # do it once I need to add more functionality.
 
+    if args.transparent:
+        alpha = True
+        greyscale = True
+        pad_with = Pixel.EMPTY
+    else:
+        alpha = False
+        greyscale = False
+        pad_with = Pixel.EMPTY_GREEN
+
     if args.width is not None:
         widthes = parse_widthes(args.width)
     else:
-        widthes = None # to be determined after file is loaded
+        widthes = None # determined once we know the amount of pixels
 
+    print(f"Reading from {args.infile!r}")
     with open(args.infile, "rb") as f:
-        values = list(f.read())
+        bytestr = f.read()
+    print(f"{len(bytestr)} bytes")
 
-    print(f"{len(values)} bytes total")
-
-    # TODO check for mode (grayscale vs rgb)
-    print("Loading pixels")
-    pixels = [Pixel.grayscale(value) for value in values]
+    pixels = list(load_pixels(bytestr))
+    print(f"{len(pixels)} pixels")
 
     if widthes is None:
         widthes = [optimal_width(len(pixels))]
 
-    rows = arrange_by_widthes(pixels, widthes)
-    max_width = max_row_width(rows)
+    print("Arranging pixels into rows")
+    rows = list(arrange_by_widthes(pixels, widthes))
+    max_width = max(map(len, rows))
+    height = len(rows)
+    print(f"{height} rows, maximum width is {max_width}")
+    print("Padding rows to the right width")
+    padded_rows = list(pad_rows_to_width(rows, max_width, pad_with))
 
-    if args.transparent:
-        print("Using transparent background")
-        alpha = True
-        pad_rows_to_width(rows, max_width, pad_with=Pixel.EMPTY)
+    print("Converting rows to raw pixel values")
+    if greyscale:
+        value_rows = rows_as_grayscale(padded_rows, alpha=alpha)
     else:
-        print("Using green background")
-        alpha = False
-        pad_rows_to_width(rows, max_width, pad_with=Pixel.EMPTY_GREEN)
+        value_rows = rows_as_rgb(padded_rows, alpha=alpha)
 
-    value_rows = rows_as_rgb(rows, alpha=alpha)
-    writer = png.Writer(alpha=alpha, width=max_width, height=len(rows))
-
+    print(f"Writing to {args.outfile!r}")
+    writer = png.Writer(greyscale=greyscale, alpha=alpha,
+            width=max_width, height=height)
     with open(args.outfile, "wb") as f:
         writer.write(f, value_rows)
 
     if args.upscale:
         print(f"Upscaling {args.outfile!r} with convert")
-        subprocess.run(["convert", args.outfile, "-filter", "point", "-resize", "1000%", args.outfile])
+        subprocess.run([
+            "convert", args.outfile,
+            "-filter", "point",
+            "-resize", "1000%",
+            args.outfile
+        ])
 
 if __name__ == "__main__":
     main()
