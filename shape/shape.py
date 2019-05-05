@@ -65,6 +65,12 @@ class Shaper:
                 if char == "\n":
                     x = 0
                     y += 1
+                elif char == "\t":
+                    image.putpixel((x, y), bgcolor)
+                    x += 1
+                    while x % self.args.tabwidth != 0:
+                        image.putpixel((x, y), bgcolor)
+                        x += 1
                 elif char.isspace():
                     image.putpixel((x, y), bgcolor)
                     x += 1
