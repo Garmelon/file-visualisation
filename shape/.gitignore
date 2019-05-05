@@ -1,0 +1,5 @@
+# venv stuff
+bin/
+lib/
+lib64
+pyvenv.cfg
